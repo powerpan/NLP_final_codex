@@ -101,25 +101,9 @@ def _utc(timestamp):
 
 
 def _token_usage(calls):
-    fields = ("prompt_tokens", "completion_tokens", "total_tokens")
-    totals = {field: 0 for field in fields}
-    coverage = {field: 0 for field in fields}
-    for call in calls:
-        try:
-            usage = json.loads(call.get("usage_json") or "{}")
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(usage, dict):
-            continue
-        for field in fields:
-            value = usage.get(field)
-            if type(value) is int and value >= 0:
-                totals[field] += value
-                coverage[field] += 1
-    return {"reported_totals": {field: totals[field] if coverage[field] else None for field in fields},
-            "calls_reporting": coverage, "total_calls": len(calls),
-            "complete": all(count == len(calls) for count in coverage.values()),
-            "note": "Provider-reported tokens only; missing usage is unknown, not free. No currency cost is estimated."}
+    # Kept as a compatibility entry point for the opt-in live test runners.
+    from .accounting import summarize_usage
+    return summarize_usage(calls)
 
 
 def _authorized_final_artifacts(store, root, result):

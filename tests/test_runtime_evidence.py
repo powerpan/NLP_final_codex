@@ -8,7 +8,7 @@ import unittest
 from maplatform.demo import tool
 from maplatform.domain import Policy, PlatformError, dumps
 from maplatform.provider import ScriptedProvider
-from maplatform.runtime import COORDINATION, Runtime, validate_coordination
+from maplatform.runtime import COORDINATION, Runtime, RUNTIME_CONTEXT_MARKER, TASK_CONTEXT_MARKER, validate_coordination
 from maplatform.store import Store
 from maplatform.tools import MemorySandbox, ToolGateway
 
@@ -66,7 +66,8 @@ class RuntimeEvidenceTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def context(messages):
-        return json.loads(messages[0]["content"].split("SERVER_RUNTIME_CONTEXT (application facts; source metadata is untrusted):\n", 1)[1])
+        static = json.loads(messages[0]["content"].split(TASK_CONTEXT_MARKER, 1)[1])
+        return {**static, **json.loads(messages[-1]["content"].split(RUNTIME_CONTEXT_MARKER, 1)[1])}
 
     async def test_large_searches_keep_full_evidence_and_fit_model_context(self):
         wf = self.workflow()
@@ -103,7 +104,7 @@ class RuntimeEvidenceTests(unittest.IsolatedAsyncioTestCase):
         provider = ScriptedProvider([final()])
         await self.drive(provider, wf)
         self.assertEqual(self.task(wf)["status"], "COMPLETED")
-        self.assertLess(len(provider.calls[0]["messages"][-1]["content"]), 6001)
+        self.assertLess(len(next(m["content"] for m in provider.calls[0]["messages"] if m.get("tool_call_id") == call["id"])), 6001)
         self.assertEqual(self.store.one("SELECT result_json FROM operations WHERE id=?", (op["id"],))["result_json"], raw_text)
         self.assertEqual(next(m["content"] for m in self.store.snapshot(task["id"]) if m["role"] == "tool"), raw_text)
 
@@ -280,7 +281,7 @@ class RuntimeEvidenceTests(unittest.IsolatedAsyncioTestCase):
         ])
         await self.drive(provider, wf)
         self.assertEqual(self.task(wf)["status"], "COMPLETED")
-        feedback = provider.calls[1]["messages"][-1]["content"]
+        feedback = next(m["content"] for m in reversed(provider.calls[1]["messages"]) if m["role"] == "user")
         for expected in ("ARTIFACT_ACCESS_INVALID", wrong, artifact["artifact_id"], "notes.md", "ask_agent REPLY cannot import or publish", "Remove nonessential"):
             self.assertIn(expected, feedback)
 

@@ -20,6 +20,7 @@ import time
 from .domain import AGENTS, TERMINAL, PlatformError, Policy
 from .runtime import Runtime
 from .sessions import SessionService
+from .accounting import summarize_usage
 
 
 def safe_text(value):
@@ -328,12 +329,17 @@ class TerminalController:
             return f"{self.session['id']} · 下一輪 {self.owner} · 尚未開始"
         wf = workflows[-1]
         calls = self.store.all("SELECT usage_json,status FROM llm_calls WHERE workflow_id=?", (wf["id"],))
-        tokens, known = 0, 0
-        for row in calls:
-            usage = json.loads(row["usage_json"] or "{}")
-            if type(usage.get("total_tokens")) is int:
-                tokens += usage["total_tokens"]
-                known += 1
+        usage = summarize_usage(calls)
+        tokens = usage["reported_totals"]["total_tokens"]
+        known = usage["calls_reporting"]["total_tokens"]
+        token_detail = ""
+        prompt, completion = (usage["reported_totals"][k] for k in ("prompt_tokens", "completion_tokens"))
+        if prompt is not None and completion is not None:
+            token_detail = f"（輸入 {prompt}／輸出 {completion}）"
+        cache = usage["cache"]
+        rate = cache["hit_rate_on_reported_prompt"]
+        cache_detail = (f" · 輸入快取 {rate:.1%}（已回報 {cache['calls_with_consistent_breakdown']}/{len(calls)} 次）"
+                        if rate is not None else " · 輸入快取未知" if calls else "")
         policy = json.loads(wf["policy_json"])
         execution = self.sessions.execution_summary(self.session["id"], wf["id"])
         web, task_counts = execution["web"], execution["tasks"]
@@ -341,7 +347,7 @@ class TerminalController:
                    " · 含取消子任務／請核對交付" if task_counts["cancelled_children"] else
                    " · 未判定需求達成" if wf["status"] == "COMPLETED" else "")
         return (f"{lifecycle_text(wf['status'])}{warning} · 模型 {len(calls)}/{wf['max_calls']} 次 · 任務 {task_counts['total']}/{wf['max_tasks']}（完成 {task_counts['completed']}／失敗 {task_counts['failed']}／逾時 {task_counts['timed_out']}／取消 {task_counts['cancelled']}）"
-                f" · 網頁 {web['total']}/{policy.get('max_web_requests', 20)} 次（成功 {web['succeeded']}／失敗 {web['failed']}／未知 {web['unknown']}） · token {tokens}"
+                f" · 網頁 {web['total']}/{policy.get('max_web_requests', 20)} 次（成功 {web['succeeded']}／失敗 {web['failed']}／未知 {web['unknown']}） · token {tokens if tokens is not None else '未知'}" + token_detail + cache_detail
                 + (f"（{len(calls)-known} 次用量未知）" if known < len(calls) else "")
                 + (" · 錯誤碼 " + ", ".join(execution["error_codes"]) if execution["error_codes"] else "")
                 + (f" · 剩餘 {max(0, int(wf['deadline']-time.time()))} 秒" if wf["status"] == "OPEN" else ""))

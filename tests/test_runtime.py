@@ -316,7 +316,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.drive(provider)
         self.assertEqual(self.task(wf)["status"], "COMPLETED")
         self.assertEqual(len(self.store.all("SELECT * FROM memories WHERE text='one durable fact'")), 1)
-        self.assertEqual(provider.calls[0]["messages"][-1]["role"], "tool")
+        self.assertEqual(provider.calls[0]["messages"][-2]["role"], "tool")
+        self.assertEqual(provider.calls[0]["messages"][-1]["role"], "system")
 
     async def test_unknown_operation_is_observation_and_never_reexecuted(self):
         wf = self.wf()
@@ -329,7 +330,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         provider = ScriptedProvider([final("Unknown prior operation was reported, not replayed")])
         await self.drive(provider)
         self.assertEqual(len(self.store.all("SELECT * FROM memories WHERE text='not actually applied'")), 0)
-        observation = json.loads(provider.calls[0]["messages"][-1]["content"])
+        observation = json.loads(next(m["content"] for m in provider.calls[0]["messages"] if m.get("tool_call_id") == "unknown"))
         self.assertEqual(observation["error"]["code"], "TOOL_OUTCOME_UNKNOWN")
 
     async def test_denied_approval_returns_tool_error_and_continues(self):
@@ -343,7 +344,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.drive(provider, gateway)
         self.assertEqual(self.task(wf)["status"], "COMPLETED")
         self.assertEqual(gateway.executions, 0)
-        self.assertEqual(json.loads(provider.calls[-1]["messages"][-1]["content"])["error"]["code"], "TOOL_DENIED")
+        self.assertEqual(json.loads(next(m["content"] for m in provider.calls[-1]["messages"] if m.get("tool_call_id") == "push"))["error"]["code"], "TOOL_DENIED")
 
     async def test_approved_exact_args_execute_once(self):
         wf = self.wf(owner="coder")
@@ -384,7 +385,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.drive(provider)
         self.assertEqual(self.task(wf)["status"], "COMPLETED")
         self.assertEqual(len(self.store.all("SELECT * FROM tasks")), 1)
-        self.assertEqual(json.loads(provider.calls[-1]["messages"][-1]["content"])["error"]["code"], "TOOL_DENIED")
+        self.assertEqual(json.loads(next(m["content"] for m in provider.calls[-1]["messages"] if m.get("tool_call_id") == "chain"))["error"]["code"], "TOOL_DENIED")
 
     async def test_spoofed_memory_actor_rejected(self):
         wf = self.wf()

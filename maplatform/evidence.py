@@ -61,6 +61,25 @@ def _url_preview(item, maximum=1200):
     return {"source_url_omitted": True, "source_url_chars": len(url)}
 
 
+def compact_web_view(view: dict) -> dict:
+    """Omit only duplicate URL metadata, never evidence text or citation URLs.
+
+    The persisted result and the public paging format stay unchanged. This is
+    an outbound-only projection: the same complete URL is already in page,
+    source, or results. Incomplete or unfamiliar shapes retain their metadata.
+    """
+    out = dict(view)
+    containers = [out.get("page"), out.get("source")]
+    if isinstance(out.get("results"), list):
+        containers.extend(out["results"])
+    represented = {item["url"] for item in containers
+                   if isinstance(item, dict) and isinstance(item.get("url"), str)}
+    urls = out.get("source_urls")
+    if isinstance(urls, list) and urls and all(isinstance(url, str) and url in represented for url in urls):
+        out.pop("source_urls")
+    return out
+
+
 def project_web_result(operation: dict) -> dict:
     """Return a <=6000-character JSON view; keep full result_json in the ledger."""
     result, text = _saved(operation)

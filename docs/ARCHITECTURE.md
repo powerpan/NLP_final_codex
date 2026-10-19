@@ -82,6 +82,8 @@ SQLite 交易涵蓋狀態、等待、訊息、審批和事件；遠端模型與 
 
 DeepSeek Search／Fetch 是獨立 HTTP 工具，由 researcher 的 schema、ToolGateway 身份授權和持久請求預算共同控制。模型 token 與網頁請求分開計數；外部內容保留來源並標記不可信。同一 workflow 的成功公開網頁證據可供各角色以 `read_web_result` 分頁讀取，失敗子任務已取得的證據仍可使用；私人訊息、reasoning 和一般產物不因此開放。成功的相同 provider／請求可重用既有 operation，新增 call binding 和重用事件；失敗、未知或執行中的操作不能命中快取。
 
+模型請求把固定能力放在首段，變動的時間／預算／證據清單以暫時的尾端 system 訊息加入；該訊息不保存到 snapshot，也不建立 user turn。相同證據正文在同一請求中只保留第一份，其後留下工具配對及可重新讀取的 operation／offset。所有 assistant reasoning 維持原樣。`ModelRequestMeasured` 只保存角色／schema／reasoning 字元數，不保存內容或嘗試推算 token；真正用量以 API 回報為準，包含 cache hit／miss 和 reasoning 子計數。
+
 每次模型請求附一份目前 UTC、實際可用角色工具、剩餘共享預算和公開網頁證據索引，不在 snapshot 重複堆疊。網頁觀察先投影為小型預覽；有上下文壓力時，較早的網頁預覽／讀取片段可換成可重新讀取的保存引用，原始操作紀錄不變，assistant／reasoning 與 tool ID 配對不刪除。這是確定性的資料投影，沒有模型生成的歷史摘要；仍超限就停止報錯。
 
 最終 JSON 的格式修復與內容驗收分開。純格式修復列出既有授權產物 ID、禁用工具，也不提早重跑驗收命令；模式由持久化事件恢復。真正驗收失敗仍可使用工具修改。`COMPLETED` 表示執行生命週期已結束；會話和終端另附伺服器統計，不能以非空回答推定使用者目標已達成。

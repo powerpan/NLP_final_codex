@@ -47,6 +47,8 @@ StreamTransport = Callable[[str, bytes, Mapping[str, str], float, int], AsyncIte
 DeltaCallback = Callable[[dict], None]
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _MAX_OUTPUT_TOKENS = 393216
+_USAGE_COUNTERS = ("prompt_tokens", "completion_tokens", "total_tokens",
+                   "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
 
 
 class CompletionError(PlatformError):
@@ -55,13 +57,38 @@ class CompletionError(PlatformError):
     def __init__(self, code: str, message: str, usage: dict):
         super().__init__(code, message)
         # Retain only validated accounting counters, never output or extensions.
-        self.usage = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens") if key in usage}
+        self.usage = {key: usage[key] for key in _USAGE_COUNTERS
+                      if isinstance(usage, dict) and type(usage.get(key)) is int and usage[key] >= 0}
+        details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
+        if isinstance(details, dict) and type(details.get("reasoning_tokens")) is int and details["reasoning_tokens"] >= 0:
+            self.usage["completion_tokens_details"] = {"reasoning_tokens": details["reasoning_tokens"]}
 
 
 def _error(code: str, message: str) -> PlatformError:
     # Only fixed descriptions go into errors: response bodies, credentials,
     # request headers and the transport's exception text are never interpolated.
     return PlatformError(code, message)
+
+
+def _validated_usage(usage: Any) -> dict:
+    """Keep explicit provider counters; absent cache data is not a zero hit rate."""
+    if not isinstance(usage, dict):
+        raise _error("PROVIDER_PROTOCOL", "Completion usage must be an object.")
+    counters = {}
+    for name in _USAGE_COUNTERS:
+        if name in usage:
+            if type(usage[name]) is not int or usage[name] < 0:
+                raise _error("PROVIDER_PROTOCOL", "Completion token usage must contain nonnegative integers.")
+            counters[name] = usage[name]
+    if "completion_tokens_details" in usage:
+        details = usage["completion_tokens_details"]
+        if not isinstance(details, dict):
+            raise _error("PROVIDER_PROTOCOL", "Completion token details must be an object.")
+        if "reasoning_tokens" in details:
+            if type(details["reasoning_tokens"]) is not int or details["reasoning_tokens"] < 0:
+                raise _error("PROVIDER_PROTOCOL", "Completion token usage must contain nonnegative integers.")
+            counters["completion_tokens_details"] = {"reasoning_tokens": details["reasoning_tokens"]}
+    return counters
 
 
 def _loads(value: str | bytes, code: str = "PROVIDER_PROTOCOL") -> Any:
@@ -399,12 +426,7 @@ class _StreamCompletion:
             raise _error("PROVIDER_PROTOCOL", "Provider returned an invalid streaming response.")
         usage = event.get("usage")
         if usage is not None:
-            if not isinstance(usage, dict):
-                raise _error("PROVIDER_PROTOCOL", "Completion usage must be an object.")
-            for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                if name in usage and (type(usage[name]) is not int or usage[name] < 0):
-                    raise _error("PROVIDER_PROTOCOL", "Completion token usage must contain nonnegative integers.")
-            self.usage.update(copy.deepcopy(usage))
+            self.usage.update(_validated_usage(usage))
         choices = event.get("choices")
         # Official DeepSeek usage accompanies the final choice. A usage-only
         # frame is also accepted for OpenAI-compatible gateways.
@@ -758,38 +780,36 @@ class DeepSeekProvider:
         response = _loads(body)
         if not isinstance(response, dict) or "error" in response:
             raise _error("PROVIDER_PROTOCOL", "Provider returned an invalid completion response.")
-        choices = response.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-            raise _error("PROVIDER_PROTOCOL", "Expected exactly one completion choice.")
-        choice = choices[0]
-        usage = response.get("usage", {})
-        if not isinstance(usage, dict):
-            raise _error("PROVIDER_PROTOCOL", "Completion usage must be an object.")
-        for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            if name in usage and (isinstance(usage[name], bool) or not isinstance(usage[name], int) or usage[name] < 0):
-                raise _error("PROVIDER_PROTOCOL", "Completion token usage must contain nonnegative integers.")
-        finish_reason = choice.get("finish_reason")
-        if not isinstance(finish_reason, str):
-            raise _error("PROVIDER_PROTOCOL", "Unsupported or missing completion finish reason.")
-        if finish_reason == "length":
-            raise CompletionError("PROVIDER_TRUNCATED", "Model output reached a limit; partial content and tool calls will not be executed. Check the output token cap, which also covers reasoning.", usage)
-        if finish_reason == "content_filter":
-            raise CompletionError("PROVIDER_FILTERED", "Provider filtered the completion.", usage)
-        if finish_reason in {"insufficient_system_resource", "aborted"}:
-            raise CompletionError("PROVIDER_TRANSIENT", "Provider interrupted generation; partial content and tool calls will not be executed. No automatic retry was performed by the provider adapter.", usage)
-        if finish_reason not in {"stop", "tool_calls"}:
-            raise _error("PROVIDER_PROTOCOL", "Unsupported or missing completion finish reason.")
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            raise _error("PROVIDER_PROTOCOL", "Missing assistant completion message.")
-        calls = _calls(message, "PROVIDER_PROTOCOL")
-        if bool(calls) != (finish_reason == "tool_calls"):
-            raise _error("PROVIDER_PROTOCOL", "Completion finish reason does not match its tool calls.")
-        for call in calls:
-            if call["id"] in history_ids:
-                raise _error("PROVIDER_PROTOCOL", "Provider reused a previous tool call ID.")
-            if call["function"]["name"] not in tool_names:
-                raise _error("PROVIDER_PROTOCOL", "Provider requested a tool that was not offered.")
+        usage = _validated_usage(response.get("usage", {}))
+        try:
+            choices = response.get("choices")
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+                raise _error("PROVIDER_PROTOCOL", "Expected exactly one completion choice.")
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason")
+            if not isinstance(finish_reason, str):
+                raise _error("PROVIDER_PROTOCOL", "Unsupported or missing completion finish reason.")
+            if finish_reason == "length":
+                raise _error("PROVIDER_TRUNCATED", "Model output reached a limit; partial content and tool calls will not be executed. Check the output token cap, which also covers reasoning.")
+            if finish_reason == "content_filter":
+                raise _error("PROVIDER_FILTERED", "Provider filtered the completion.")
+            if finish_reason in {"insufficient_system_resource", "aborted"}:
+                raise _error("PROVIDER_TRANSIENT", "Provider interrupted generation; partial content and tool calls will not be executed. No automatic retry was performed by the provider adapter.")
+            if finish_reason not in {"stop", "tool_calls"}:
+                raise _error("PROVIDER_PROTOCOL", "Unsupported or missing completion finish reason.")
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise _error("PROVIDER_PROTOCOL", "Missing assistant completion message.")
+            calls = _calls(message, "PROVIDER_PROTOCOL")
+            if bool(calls) != (finish_reason == "tool_calls"):
+                raise _error("PROVIDER_PROTOCOL", "Completion finish reason does not match its tool calls.")
+            for call in calls:
+                if call["id"] in history_ids:
+                    raise _error("PROVIDER_PROTOCOL", "Provider reused a previous tool call ID.")
+                if call["function"]["name"] not in tool_names:
+                    raise _error("PROVIDER_PROTOCOL", "Provider requested a tool that was not offered.")
+        except PlatformError as error:
+            raise CompletionError(error.code, error.message, usage) from None
         return Completion(copy.deepcopy(message), copy.deepcopy(usage))
 
 

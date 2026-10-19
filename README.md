@@ -28,6 +28,8 @@ zsh scripts/terminal.zsh --db data/terminal-live.sqlite
 
 不帶參數執行 `.venv/bin/python -m maplatform` 也會進入互動模式。完整指令、上下文與產物延續、費用口徑和驗證邊界見 [互動終端指南](docs/TERMINAL.md)。新版串流、多 Agent、官方網頁工具與自然語言新聞任務的實測、失敗原因和修復見 [真實協作檢查](docs/LIVE_COLLABORATION_2026-10-19.md)。
 
+已針對重複上下文與低快取命中率調整請求組織，保留完整工具推理與可讀證據。用量拆解、修改與驗證口徑見 [Token 用量分析](docs/TOKEN_EFFICIENCY_2026-10-19.md)；`scripts/audit_token_usage.py` 可唯讀分析本機執行紀錄，不呼叫模型。
+
 ## 先跑離線示範
 
 在解壓後的專案目錄執行：
