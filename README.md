@@ -16,7 +16,7 @@ python3 -m venv .venv
 zsh scripts/terminal.zsh --demo --db data/terminal-demo.sqlite
 ```
 
-輸入「協作」可看見主 Agent、子任務、孫任務和唯讀諮詢；coder 會提出問題，再進入操作審批。`/focus ID` 查看指定任務，`/focus all` 返回主對話，`/cancel ID` 取消該任務及其後代。`/copy` 切換終端原生選字，方便在 Mac 用 `⌘C` 複製。示範不呼叫 API，也不真的推送 Git。
+輸入「協作」可看見主 Agent、子任務、孫任務和唯讀諮詢；coder 會提出問題，再進入操作審批。`/focus ID` 查看指定任務，`/focus all` 返回主對話，`/cancel ID` 取消該任務及其後代。回答區可拖曳及跨頁選字，點「複製選取」或輸入 `/copy` 寫入本機剪貼簿。示範不呼叫 API，也不真的推送 Git。
 
 真實使用時換一個資料庫：
 

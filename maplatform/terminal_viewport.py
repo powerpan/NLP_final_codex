@@ -8,15 +8,15 @@ from bisect import bisect_right
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.layout import ScrollOffsets, VSplit, Window
 from prompt_toolkit.layout.controls import UIContent, UIControl
-from prompt_toolkit.mouse_events import MouseButton, MouseEventType
+from prompt_toolkit.mouse_events import MouseButton, MouseEventType, MouseModifier
 from prompt_toolkit.utils import get_cwidth
 
 
 def wrap_fragments(fragments, width):
-    """Return styled display rows and their offsets into the original text."""
+    """Return styled rows, row offsets, and source spans for painted characters."""
     width = max(1, width)
     source = "".join(text for _, text in fragments)
-    lines, offsets = [[]], [0]
+    lines, offsets, positions = [[]], [0], [[]]
     column = offset = 0
 
     def append(style, text):
@@ -31,6 +31,7 @@ def wrap_fragments(fragments, width):
             if char == "\n":
                 lines.append([])
                 offsets.append(offset + 1)
+                positions.append([])
                 column = 0
             else:
                 # The renderer does not expand tabs itself. Use explicit tab stops.
@@ -46,13 +47,15 @@ def wrap_fragments(fragments, width):
                     if cells and column + cells + reserve > width and column:
                         lines.append([])
                         offsets.append(offset)
+                        positions.append([])
                         column = 0
                     if cells > width:  # A two-cell glyph cannot fit a one-cell pane.
                         glyph, cells = "�", 1
                     append(style, glyph)
+                    positions[-1].append((offset, offset + 1))
                     column += cells
             offset += 1
-    return lines, offsets
+    return lines, offsets, positions
 
 
 def remap_anchor(old, new, anchor):
@@ -100,10 +103,17 @@ def suffix_prefix_overlap(old, new):
 class ScrollableText(UIControl):
     """A non-focusable viewport; the input composer always owns the real cursor."""
 
-    def __init__(self, *, follow=True):
+    def __init__(self, *, follow=True, selectable=False):
         self.fragments = ()
         self.text = ""
         self.lines, self.offsets = [[]], [0]
+        self.positions = [[]]
+        self.selectable = selectable
+        self._selection_anchor = self._selection_focus = None
+        self._dragging = False
+        self._pending_fragments = None
+        self._laid_fragments = ()
+        self._laid_text = ""
         self.top = 0
         self.follow = follow
         self.height = 1
@@ -117,6 +127,13 @@ class ScrollableText(UIControl):
 
     def set_fragments(self, fragments, *, reset=False):
         fragments = tuple(fragments)
+        if reset:
+            self.clear_selection(apply_pending=False)
+        elif self.selection_active:
+            # A selection always refers to the exact text the user saw. Status
+            # and other panes may keep updating; this pane catches up on clear.
+            self._pending_fragments = fragments
+            return
         if fragments != self.fragments:
             text = "".join(value for _, value in fragments)
             if not self.follow:
@@ -130,7 +147,8 @@ class ScrollableText(UIControl):
         width = max(1, width)
         self.height = max(1, height)
         if self._dirty or width != self._width:
-            self.lines, self.offsets = wrap_fragments(self.fragments, width)
+            self.lines, self.offsets, self.positions = wrap_fragments(self.fragments, width)
+            self._laid_fragments, self._laid_text = self.fragments, self.text
             self._width, self._dirty = width, False
         if self.follow:
             self.top = self.max_top
@@ -138,8 +156,77 @@ class ScrollableText(UIControl):
             # Retain the character anchor across repeated resizes, rather than
             # replacing it with the start of each newly wrapped row (which drifts).
             self.top = min(self.max_top, max(0, bisect_right(self.offsets, self._anchor) - 1))
-        return UIContent(get_line=lambda i: self.lines[i], line_count=len(self.lines),
+        return UIContent(get_line=self._render_line, line_count=len(self.lines),
                          cursor_position=Point(x=0, y=self.top), show_cursor=False)
+
+    @property
+    def selection_active(self):
+        return self._selection_anchor is not None
+
+    @property
+    def selection_range(self):
+        if not self.selection_active:
+            return None
+        a, b = self._selection_anchor, self._selection_focus
+        return min(a[0], b[0]), max(a[1], b[1])
+
+    def selection_text(self):
+        selected = self.selection_range
+        return self.text[selected[0]:selected[1]] if selected else ""
+
+    def clear_selection(self, *, apply_pending=True):
+        self._selection_anchor = self._selection_focus = None
+        self._dragging = False
+        pending, self._pending_fragments = self._pending_fragments, None
+        if apply_pending and pending is not None:
+            self.set_fragments(pending)
+
+    def _render_line(self, row):
+        fragments = self.lines[row]
+        if not self.selectable:
+            return fragments
+        selected = self.selection_range
+        result = []
+        index = 0
+        for style, text in fragments:
+            for char in text:
+                start, end = self.positions[row][index]
+                mark = selected and start < selected[1] and end > selected[0]
+                char_style = style + " class:selection" if mark else style
+                if result and result[-1][0] == char_style:
+                    result[-1] = (char_style, result[-1][1] + char)
+                else:
+                    result.append((char_style, char))
+                index += 1
+        # Empty rows and end-of-line padding need a mouse hit target. This
+        # sentinel is only painted, never part of the source/copied text.
+        result.append(("", " "))
+        return result
+
+    def _span_at(self, point):
+        row = max(0, min(len(self.lines) - 1, point.y))
+        spans = self.positions[row]
+        if not spans or point.x >= len(spans):
+            end = spans[-1][1] if spans else self.offsets[row]
+            return end, end
+        start, end = spans[max(0, point.x)]
+        # Keep combining marks with their base character in the clipboard.
+        while start > 0 and self.text[start] not in "\n\t" and get_cwidth(self.text[start]) == 0:
+            start -= 1
+        while end < len(self.text) and self.text[end] not in "\n\t" and get_cwidth(self.text[end]) == 0:
+            end += 1
+        return start, end
+
+    def _extend_selection(self, point):
+        self._selection_focus = self._span_at(point)
+
+    def _keep_painted_source(self):
+        if self._dirty:
+            # A queued model update may have arrived since the last paint. A
+            # mouse event still refers to the cells actually shown to the user.
+            self._pending_fragments = self.fragments
+            self.fragments, self.text = self._laid_fragments, self._laid_text
+            self._dirty = False
 
     def scroll_to(self, row):
         self.top = max(0, min(self.max_top, row))
@@ -159,12 +246,45 @@ class ScrollableText(UIControl):
         self.scroll_to(self.max_top)
 
     def mouse_handler(self, mouse_event):
-        if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self.scroll_by(-3)
-        elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self.scroll_by(3)
+        kind = mouse_event.event_type
+        point = mouse_event.position
+        if kind in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+            old_top = self.top
+            old_row = max(0, min(len(self.lines) - 1, point.y))
+            old_line = "".join(t for _, t in self.lines[old_row])
+            cell_column = get_cwidth(old_line[:point.x])
+            self.scroll_by(-3 if kind == MouseEventType.SCROLL_UP else 3)
+            if self._dragging:
+                row = min(len(self.lines) - 1, max(0, point.y + self.top - old_top))
+                column = cells = 0
+                for char in "".join(t for _, t in self.lines[row]):
+                    if cells + get_cwidth(char) > cell_column:
+                        break
+                    cells += get_cwidth(char)
+                    column += 1
+                self._extend_selection(Point(x=column, y=row))
+        elif self.selectable:
+            if kind == MouseEventType.MOUSE_DOWN and mouse_event.button == MouseButton.LEFT:
+                self._keep_painted_source()
+                span = self._span_at(point)
+                if MouseModifier.SHIFT not in mouse_event.modifiers or not self.selection_active:
+                    self._selection_anchor = span
+                self._selection_focus = span
+                self._dragging = True
+                self.follow = False
+                self._anchor = self.offsets[self.top]
+            elif kind == MouseEventType.MOUSE_MOVE:
+                if self._dragging and mouse_event.button == MouseButton.LEFT:
+                    self._extend_selection(point)
+                else:
+                    # Mouse release outside this pane is delivered elsewhere.
+                    self._dragging = False
+            elif kind == MouseEventType.MOUSE_UP:
+                if self._dragging:
+                    self._extend_selection(point)
+                self._dragging = False
         # Consume mouse events: never invoke Window's cursor/source-line scrolling.
-        # /copy disables mouse reporting so the terminal can select text natively.
+        # Only explicitly selectable panes expose content to clipboard actions.
         return None
 
 

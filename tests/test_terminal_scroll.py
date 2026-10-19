@@ -178,27 +178,38 @@ class ScrollIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("END_OF_REPLY", self.screen_text())
         self.assertTrue(control.follow)
 
-    async def test_copy_mode_releases_mouse_and_freezes_stream_until_exit(self):
+    async def test_copy_never_releases_mouse_or_scrolls_the_outer_terminal(self):
+        with patch("maplatform.terminal_clipboard.copy_text") as clipboard:
+            await self.send("/copy\r")
+            self.assertTrue(self.app.mouse_support())
+            self.assertTrue(self.output.mouse_enabled)
+            clipboard.assert_not_called()
+            await self.send("\x1b[<64;2;5M" * 100)
+            self.assertIn("第000段", self.screen_text())
+            self.assertEqual(self.controller.workflows(), [])
+
+    async def test_transcript_selection_freezes_only_its_source_until_escape(self):
         control = self.pane().content
         composer = self.app.layout.current_control
         await self.send("\x1b[5~")
         top = control.top
-        await self.send("/copy\r")
+        await self.send("\x1b[<0;2;6M\x1b[<32;10;7M\x1b[<0;10;7m")
         await self.send("保留輸入草稿")
-        self.assertFalse(self.app.mouse_support())
-        self.assertFalse(self.output.mouse_enabled)
+        self.assertTrue(control.selection_text())
+        self.assertTrue(self.app.mouse_support())
+        self.assertTrue(self.output.mouse_enabled)
         screen_before = self.screen_text()
-        counter = self.app.render_counter
         self.controller.transcript_fragments = lambda: (("", LONG_REPLY + "\nNEW_STREAM_TEXT"),)
         self.controller.status_text = lambda: "UPDATED_STATUS"
         self.controller.on_change()
         await asyncio.sleep(.25)  # Two refresh intervals, including pending invalidations.
         self.assertEqual(control.text, LONG_REPLY)
         self.assertEqual(self.screen_text(), screen_before)
-        self.assertEqual(self.app.render_counter, counter)
+        self.assertTrue(control.selection_text())
+        self.assertIn("UPDATED_STATUS", self.full_screen_text())
         # Escape exits without submitting or discarding the input draft.
         self.pipe.send_text("\x1b")
-        await self.until(lambda: self.output.mouse_enabled)
+        await self.until(lambda: not control.selection_active)
         self.assertTrue(self.app.mouse_support())
         self.assertTrue(self.output.mouse_enabled)
         await self.until(lambda: control.text.endswith("NEW_STREAM_TEXT"))
@@ -206,13 +217,65 @@ class ScrollIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.app.layout.current_control, composer)
         self.assertEqual(composer.buffer.text, "保留輸入草稿")
 
-    async def test_copy_command_toggles_without_starting_a_model_task(self):
-        await self.send("/copy\r")
-        self.assertFalse(self.app.mouse_support())
+    def full_screen_text(self):
+        screen = self.app.renderer._last_screen
+        return "\n".join("".join(screen.data_buffer[y][x].char
+                                 for x in range(self.output.columns))
+                         for y in range(self.output.rows))
+
+    def cell_for_offset(self, offset):
+        """Locate a source character in the painted viewport for actual SGR input."""
+        from prompt_toolkit.utils import get_cwidth
+        control = self.pane().content
+        pos = self.app.renderer._last_screen.visible_windows_to_write_positions[self.pane()]
+        for row in range(control.top, min(len(control.lines), control.top + pos.height)):
+            for column, (start, end) in enumerate(control.positions[row]):
+                if start <= offset < end:
+                    text = "".join(t for _, t in control.lines[row])
+                    return pos.xpos + get_cwidth(text[:column]) + 1, pos.ypos + row - control.top + 1
+        self.fail("Target source character is not visible")
+
+    async def test_cross_page_selection_copies_exact_source_and_excludes_other_panes(self):
+        control = self.pane().content
+        await self.send("\x1b[1;5H")
+        start = LONG_REPLY.index("第000段")
+        x, y = self.cell_for_offset(start)
+        # Click the second terminal cell of the wide Chinese character.
+        await self.send(f"\x1b[<0;{x + 1};{y}M\x1b[<0;{x + 1};{y}m")
+        await self.send("\x1b[<65;2;6M" * 100)
+        end = LONG_REPLY.index("END_OF_REPLY") + len("END_OF_REPLY") - 1
+        x, y = self.cell_for_offset(end)
+        await self.send(f"\x1b[<4;{x};{y}M\x1b[<4;{x};{y}m")  # Shift click
+        expected = LONG_REPLY[start:end + 1]
+        self.assertEqual(control.selection_text(), expected)
+        self.assertTrue(self.output.mouse_enabled)
+        # The right-hand pane does not extend or replace the answer selection.
+        await self.send("\x1b[<0;110;7M\x1b[<32;115;10M\x1b[<0;115;10m")
+        self.assertEqual(control.selection_text(), expected)
+        with patch("maplatform.terminal_clipboard.copy_text") as clipboard:
+            await self.send("/copy\r")
+            clipboard.assert_awaited_once_with(expected)
+        self.assertTrue(self.output.mouse_enabled)
         self.assertEqual(self.controller.workflows(), [])
-        await self.send("/copy\r")
-        self.assertTrue(self.app.mouse_support())
-        self.assertEqual(self.controller.workflows(), [])
+
+    async def test_copy_button_preserves_input_and_reports_clipboard_failure(self):
+        from maplatform.domain import PlatformError
+        await self.send("保留草稿")
+        await self.send("\x1b[<0;2;6M\x1b[<32;10;7M\x1b[<0;10;7m")
+        expected = self.pane().content.selection_text()
+        self.assertTrue(expected)
+        # Toolbar begins in row three, independently of transcript scrolling.
+        with patch("maplatform.terminal_clipboard.copy_text") as clipboard:
+            await self.send("\x1b[<0;9;3M\x1b[<0;9;3m")
+            await self.until(lambda: clipboard.await_count == 1)
+            clipboard.assert_awaited_once_with(expected)
+        composer = self.app.layout.current_control
+        self.assertEqual(composer.buffer.text, "保留草稿")
+        with patch("maplatform.terminal_clipboard.copy_text", side_effect=PlatformError("CLIPBOARD_FAILED", "Test failure")):
+            await self.send("\x1b[<0;9;3M\x1b[<0;9;3m")
+            await self.until(lambda: "CLIPBOARD_FAILED" in self.full_screen_text())
+        self.assertEqual(self.pane().content.selection_text(), expected)
+        self.assertEqual(composer.buffer.text, "保留草稿")
 
 
 if __name__ == "__main__":

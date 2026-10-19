@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import sqlite3
@@ -64,6 +65,12 @@ def main():
         def send(text):
             os.write(master, text.encode())
 
+        def mouse_reporting_enabled():
+            # Renderer resets after resize may emit disable then enable. The
+            # terminal's final mode, not presence of any reset, is what matters.
+            switches = re.findall(rb"\x1b\[\?1000([hl])", bytes(raw))
+            return bool(switches) and switches[-1] == b"h"
+
         size(120, 36)
         env = {**os.environ, "TERM": "xterm-256color", "PROMPT_TOOLKIT_NO_CPR": "1"}
         process = subprocess.Popen([sys.executable, "-m", "maplatform", "shell", "--demo", "--db", db],
@@ -95,12 +102,13 @@ def main():
             checkpoint = len(raw)
             send("/copy\r")
             drain(.3)
-            assert b"\x1b[?1000l" in raw[checkpoint:], "Copy mode must release terminal mouse reporting"
+            assert mouse_reporting_enabled(), "Copy must keep scrolling inside the application"
+            assert "先在回答區".encode() in raw[checkpoint:], "Empty selection should show instructions"
             checkpoint = len(raw)
             send("/copy\r")
             drain(.3)
-            assert b"\x1b[?1000h" in raw[checkpoint:], "Leaving copy mode must restore scrolling"
-            evidence["copy_mode_mouse_reporting_toggled"] = True
+            assert mouse_reporting_enabled(), "Repeated copy must not release mouse reporting"
+            evidence["copy_keeps_mouse_reporting_enabled"] = True
             send("接續上輪內容\r")
             wait(lambda: len(query("SELECT id FROM workflows WHERE status='COMPLETED'")) == 2)
             # Workflow completion precedes session-history materialization.

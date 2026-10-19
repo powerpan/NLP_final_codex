@@ -82,7 +82,7 @@ PageUp / PageDown 翻頁 · Ctrl+Home 最前 · Ctrl+End 最新 · Ctrl+C 暫停
 /approve ID       批准指定操作     /deny ID            拒絕指定操作
 /resume           恢復當前會話     /cancel [TASK_ID]   取消任務及其子任務
 /status           預算與狀態       /clear              清除提示 / 返回對話
-/copy             選字複製模式（全螢幕）；再次輸入或 Esc 返回
+/copy             複製回答區選取文字（全螢幕）；Esc 清除選取
 /help             指令說明         /exit               保存會話並離開
 只有一個待答問題時，可直接輸入答案。審批必須使用 /approve 或 /deny。
 執行中可回答問題、審批、查看狀態；下一輪請等本輪完成。
@@ -550,11 +550,13 @@ async def run_tui(controller, *, input=None, output=None):
         from prompt_toolkit.layout.dimension import Dimension
         from prompt_toolkit.styles import Style
         from prompt_toolkit.widgets import Frame, TextArea
+        from prompt_toolkit.mouse_events import MouseButton, MouseEventType
         from .terminal_viewport import ScrollableText, scrollable_pane
+        from . import terminal_clipboard
     except ImportError as exc:
         raise PlatformError("TERMINAL_DEPENDENCY", "請先執行 python -m pip install -e '.[terminal]'，或使用 shell --plain。") from exc
 
-    transcript = ScrollableText()
+    transcript = ScrollableText(selectable=True)
     tree = ScrollableText(follow=False)
     pending = ScrollableText(follow=False)
     commands = [word for line in HELP.splitlines() for word in line.split() if word.startswith("/")]
@@ -562,16 +564,29 @@ async def run_tui(controller, *, input=None, output=None):
                         history=InMemoryHistory(), completer=WordCompleter(sorted(set(commands))))
     kb = KeyBindings()
     sending = False
-    copy_mode = False
+    copying = False
     display = {"header": [], "status": "", "notice": "", "has_pending": False}
 
-    def set_copy_mode(enabled):
-        nonlocal copy_mode
-        copy_mode = enabled
+    def clear_selection():
+        transcript.clear_selection()
         app.invalidate()
 
-    def on_change():
-        if not copy_mode:
+    async def copy_selection():
+        nonlocal copying
+        if copying:
+            return
+        text = transcript.selection_text()
+        if not text:
+            controller.notice("先在回答區拖曳選字；可捲動後 Shift 點選終點，再按「複製選取」。")
+            return
+        copying = True
+        try:
+            await terminal_clipboard.copy_text(text)
+            controller.notice(f"已複製 {len(text):,} 字到剪貼簿。Esc 或「清除選取」繼續更新回答。")
+        except PlatformError as exc:
+            controller.notice(f"{exc.code}: {exc}")
+        finally:
+            copying = False
             app.invalidate()
 
     @kb.add("enter", filter=Condition(lambda: app.layout.has_focus(composer)))
@@ -583,11 +598,11 @@ async def run_tui(controller, *, input=None, output=None):
         value = composer.text
         try:
             if value.strip() == "/copy":
-                set_copy_mode(not copy_mode)
+                await copy_selection()
                 composer.buffer.append_to_history()
                 composer.buffer.reset()
                 return
-            set_copy_mode(False)
+            clear_selection()
             if await controller.submit(value):
                 composer.buffer.append_to_history()
                 composer.buffer.reset()
@@ -600,15 +615,15 @@ async def run_tui(controller, *, input=None, output=None):
         composer.buffer.insert_text("\n")
     @kb.add("c-c")
     async def pause(event):
-        set_copy_mode(False)
+        clear_selection()
         await controller.pause()
     @kb.add("c-d")
     async def leave(event):
         await controller.close()
         app.exit()
-    @kb.add("escape", filter=Condition(lambda: copy_mode))
-    def leave_copy_mode(event):
-        set_copy_mode(False)
+    @kb.add("escape", filter=Condition(lambda: transcript.selection_active))
+    def leave_selection(event):
+        clear_selection()
     @kb.add("pageup")
     def page_up(event):
         transcript.page(-1)
@@ -623,7 +638,7 @@ async def run_tui(controller, *, input=None, output=None):
         transcript.to_end()
     @kb.add("c-l")
     def clear(event):
-        set_copy_mode(False)
+        clear_selection()
         controller.panel = ""
         controller.focus = None
         app.invalidate()
@@ -632,16 +647,33 @@ async def run_tui(controller, *, input=None, output=None):
         mode = "OFFLINE DEMO" if controller.demo else getattr(controller.provider, "model", "DEEPSEEK")
         return [("class:brand", "  ◈ MULTI AGENT  "), ("class:muted", safe_text(f"{mode}  /  {controller.owner}  /  {controller.session['id'][:18]}"))]
     def footer():
-        if copy_mode:
-            return [("class:notice", " 選字模式 · 拖曳選取後 ⌘C 複製 · Esc 或 /copy 返回 · 背景任務繼續 ")]
+        if transcript.selection_active:
+            return [("class:notice", " 回答區選字 · 滾輪翻閱 · Shift 點選延伸 · /copy 複製 · Esc 清除 · 背景任務繼續 ")]
         mode = "歷史瀏覽" if not transcript.follow else "跟隨最新"
-        return [("class:muted", f" Enter 送出 · /copy 選字 · /focus Agent · Ctrl+End 最新 · {mode} · /help ")]
+        return [("class:muted", f" Enter 送出 · 拖曳回答選字 · /copy 複製 · /focus Agent · {mode} · /help ")]
 
     def notice():
-        text = "畫面已暫停更新，可用終端原生選字；Esc 或 /copy 返回。" if copy_mode else display["notice"]
-        return [("class:notice", " " + text)]
+        return [("class:notice", " " + display["notice"])]
+
+    def click(action):
+        def handle(event):
+            if event.event_type == MouseEventType.MOUSE_UP and event.button == MouseButton.LEFT:
+                action()
+            return None
+        return handle
+
+    def toolbar():
+        count = len(transcript.selection_text())
+        suffix = f" 已選 {count:,} 字 · 回答更新暫存" if transcript.selection_active else ""
+        return [("class:muted", " 回答 "),
+                ("class:action", "[複製選取]", click(lambda: app.create_background_task(copy_selection()))),
+                ("", " "), ("class:action", "[清除選取]", click(clear_selection)),
+                ("", " "), ("class:action", "[最前]", click(transcript.to_start)),
+                ("", " "), ("class:action", "[最新]", click(transcript.to_end)),
+                ("class:muted", suffix)]
     wide = Condition(lambda: app.output.get_size().columns >= 92)
-    body = VSplit([scrollable_pane(transcript),
+    answer_pane = HSplit([Window(FormattedTextControl(toolbar), height=1), scrollable_pane(transcript)])
+    body = VSplit([answer_pane,
                    ConditionalContainer(Frame(scrollable_pane(tree, width=34), title="任務樹", style="class:tree"), wide)])
     root = HSplit([Window(FormattedTextControl(lambda: display["header"]), height=1),
                    Window(FormattedTextControl(lambda: [("class:muted", " " + display["status"])]), height=1),
@@ -655,17 +687,15 @@ async def run_tui(controller, *, input=None, output=None):
                                              "md.bold": "bold", "md.italic": "italic", "md.strike": "strike",
                                              "md.heading": "bold #75dfca", "md.code": "#e5c07b",
                                              "md.code-label": "italic #9099a6", "md.link": "underline #80bfff",
-                                             "md.marker": "#a6bacb", "md.quote": "#9099a6"}),
-                      full_screen=True, mouse_support=Condition(lambda: not copy_mode), input=input, output=output,
+                                             "md.marker": "#a6bacb", "md.quote": "#9099a6",
+                                             "selection": "bg:#36566f #ffffff", "action": "underline #80bfff"}),
+                      full_screen=True, mouse_support=True, input=input, output=output,
                       min_redraw_interval=.05)
-    controller.on_change = on_change
+    controller.on_change = app.invalidate
     async def refresh():
         previous = None
         previous_view = None
         while not controller.closed:
-            if copy_mode:
-                await asyncio.sleep(.1)
-                continue
             state = (controller.transcript_fragments(), controller.tree_text(), controller.pending_text(), controller.status_text())
             view = (controller.session["id"], controller.focus, controller.panel)
             next_display = {"header": header(), "status": state[3],
