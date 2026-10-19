@@ -1,0 +1,20 @@
+{
+  "id": "text-coordination-smoke-v2",
+  "description": "One small text-only live smoke case; no Docker, file, search or Git tools are needed. Its assertions check delivery, not general model quality.",
+  "cases": [
+    {
+      "id": "peer-reply",
+      "owner": "planner",
+      "goal": "Use ask_agent exactly once to ask reviewer this complete question: 'In this project, offline tests use deterministic scripted model responses to verify Python/SQLite coordination, permissions, recovery and artifact contracts. They send no real model requests and do not evaluate a model on a dataset. In one sentence, explain why passing these tests does not establish real model task quality.' After receiving the reply, summarize the distinction in Traditional Chinese in at most three sentences and include the exact phrase peer reply received in your final summary. Return final JSON with artifact_ids as an empty list. The only tool call needed or permitted in this case is that single ask_agent call; ask reviewer to reply directly without tools. Do not ask a human, delegate tasks, use memory/file/code/search/Git tools, or produce artifacts.",
+      "acceptance": [
+        {"kind": "nonempty"},
+        {"kind": "contains", "text": "peer reply received"}
+      ],
+      "assertions": [
+        {"kind": "summary_contains", "text": "peer reply received"},
+        {"kind": "completed_task_count", "owner": "reviewer", "task_kind": "REPLY", "count": 1},
+        {"kind": "tool_calls_exact", "names": ["ask_agent"]}
+      ]
+    }
+  ]
+}

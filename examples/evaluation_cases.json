@@ -1,0 +1,34 @@
+{
+  "id": "artifact-contract-smoke-v1",
+  "description": "Two small artifact-contract smoke cases. These check exact output delivery, not general coding skill or full code correctness. External assertions are fixed before model calls.",
+  "cases": [
+    {
+      "id": "utf8-note",
+      "owner": "planner",
+      "goal": "Ask a researcher to create a UTF-8 file named note.txt containing exactly the text Hello, multi-agent! followed by one newline. Have the researcher publish it with name note.txt and grant planner access. Return that real artifact ID in your final artifact_ids, and include the exact phrase note delivered in your final summary. Do not ask a human; all required details are supplied.",
+      "acceptance": [
+        {"kind": "nonempty"},
+        {"kind": "artifact", "name": "note.txt"}
+      ],
+      "assertions": [
+        {"kind": "summary_contains", "text": "note delivered"},
+        {"kind": "artifact_contains", "name": "note.txt", "text": "Hello, multi-agent!\n"},
+        {"kind": "artifact_sha256", "name": "note.txt", "sha256": "e581a4a845ea119053c97dfc7619400b79032dd01f827f0ae2754bc92ba1ecdb"}
+      ]
+    },
+    {
+      "id": "manifest-delivery",
+      "owner": "planner",
+      "goal": "Ask a researcher to create a UTF-8 file named manifest.json containing exactly {\"schema\":1,\"status\":\"ready\"} followed by one newline, without Markdown fences or extra spaces. Have the researcher publish it with name manifest.json and grant planner access. Return that real artifact ID in your final artifact_ids, and include the exact phrase manifest delivered in your final summary. Do not ask a human; all required details are supplied. This is a file-delivery contract and does not require executing code.",
+      "acceptance": [
+        {"kind": "nonempty"},
+        {"kind": "artifact", "name": "manifest.json"}
+      ],
+      "assertions": [
+        {"kind": "summary_contains", "text": "manifest delivered"},
+        {"kind": "artifact_contains", "name": "manifest.json", "text": "{\"schema\":1,\"status\":\"ready\"}\n"},
+        {"kind": "artifact_sha256", "name": "manifest.json", "sha256": "36aaf87aec89336479ecfc2028635ea65277554d138e05b83018e05b423db481"}
+      ]
+    }
+  ]
+}

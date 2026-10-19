@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agent-course-platform"
+version = "0.1.0"
+description = "A durable local Multi-Agent course prototype with a DeepSeek boundary"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+terminal = ["prompt_toolkit>=3.0.48,<4"]
+
+[project.scripts]
+ma-platform = "maplatform.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["maplatform*"]

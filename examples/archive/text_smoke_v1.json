@@ -1,0 +1,19 @@
+{
+  "id": "text-coordination-smoke-v1",
+  "description": "One small text-only live smoke case; no Docker, file, search or Git tools are needed. Its assertions check delivery, not general model quality.",
+  "cases": [
+    {
+      "id": "peer-reply",
+      "owner": "planner",
+      "goal": "Use ask_agent exactly once to ask reviewer: 'In one sentence, explain why passing offline tests does not prove real model quality.' After receiving the reply, summarize the distinction in Traditional Chinese and include the exact phrase peer reply received in your final summary. Return final JSON with artifact_ids as an empty list. All details are supplied; do not ask a human, delegate tasks, use file/code/search/Git tools, or produce artifacts.",
+      "acceptance": [
+        {"kind": "nonempty"},
+        {"kind": "contains", "text": "peer reply received"}
+      ],
+      "assertions": [
+        {"kind": "summary_contains", "text": "peer reply received"},
+        {"kind": "completed_task_count", "owner": "reviewer", "task_kind": "REPLY", "count": 1}
+      ]
+    }
+  ]
+}
