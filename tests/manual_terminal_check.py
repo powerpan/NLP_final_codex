@@ -87,10 +87,24 @@ def main():
             evidence["approval"] = query("SELECT tool_name,status FROM approvals ORDER BY created")
             size(120, 36)
             process.send_signal(signal.SIGWINCH)
-            send("\x1bOQ")  # F2: per-agent detail
+            task_id = query("SELECT id FROM tasks WHERE owner='researcher' AND kind='WORK' LIMIT 1")[0]["id"]
+            send("/focus " + task_id + "\r")
             drain(.2)
+            send("/focus all\r")
+            drain(.2)
+            checkpoint = len(raw)
+            send("/copy\r")
+            drain(.3)
+            assert b"\x1b[?1000l" in raw[checkpoint:], "Copy mode must release terminal mouse reporting"
+            checkpoint = len(raw)
+            send("/copy\r")
+            drain(.3)
+            assert b"\x1b[?1000h" in raw[checkpoint:], "Leaving copy mode must restore scrolling"
+            evidence["copy_mode_mouse_reporting_toggled"] = True
             send("接續上輪內容\r")
             wait(lambda: len(query("SELECT id FROM workflows WHERE status='COMPLETED'")) == 2)
+            # Workflow completion precedes session-history materialization.
+            wait(lambda: bool(query("SELECT assistant_text FROM session_turns ORDER BY ordinal DESC LIMIT 1")[0]["assistant_text"]))
             second = query("SELECT assistant_text FROM session_turns ORDER BY ordinal DESC LIMIT 1")[0]["assistant_text"]
             assert "3 則歷史訊息" in second
             send("/exit\r")

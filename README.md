@@ -1,6 +1,6 @@
 # Multi-Agent Collaborative Platform
 
-這是一個可執行的課程專案原型：由 DeepSeek 提出工具呼叫與協作動作，Python 控制面負責任務狀態、授權、等待、恢復和驗收。互動終端支援持續對話、串流草稿、父子 Agent 任務樹，以及同一畫面的人工問答和審批。使用 Python 3.11 以上版本；核心和行式入口使用標準庫，完整終端介面另需可選套件 `prompt_toolkit`。
+這是一個可執行的課程專案原型：由 DeepSeek 提出工具呼叫與協作動作，Python 控制面負責任務狀態、授權、等待、恢復和驗收。互動終端支援持續對話、串流草稿、父子 Agent 任務樹，以及同一畫面的人工問答和審批。使用 Python 3.11 以上版本；核心和行式入口使用標準庫，完整終端介面使用可選的 `terminal` 套件群（`prompt_toolkit`、`markdown-it-py`），支援 Markdown 回答格式。
 
 本次以提供的 v0.3 架構為起點，核對 DeepSeek Harness 官方開源實作後調整。原文件屬於設計候選；這個交付也不能代替教授的原始 Rubric。具體變更、來源與尚未驗證的部分見 `docs/`。
 
@@ -16,7 +16,7 @@ python3 -m venv .venv
 zsh scripts/terminal.zsh --demo --db data/terminal-demo.sqlite
 ```
 
-輸入「協作」可看見主 Agent、子任務、孫任務和唯讀諮詢；coder 會提出問題，再進入操作審批。F2 切換各 Agent 詳情，`/focus ID` 查看指定任務，`/cancel ID` 取消該任務及其後代。示範不呼叫 API，也不真的推送 Git。
+輸入「協作」可看見主 Agent、子任務、孫任務和唯讀諮詢；coder 會提出問題，再進入操作審批。`/focus ID` 查看指定任務，`/focus all` 返回主對話，`/cancel ID` 取消該任務及其後代。`/copy` 切換終端原生選字，方便在 Mac 用 `⌘C` 複製。示範不呼叫 API，也不真的推送 Git。
 
 真實使用時換一個資料庫：
 

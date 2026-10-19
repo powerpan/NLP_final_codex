@@ -26,7 +26,7 @@
 | [Qwen Code 輸入按鍵分類](https://github.com/QwenLM/qwen-code/blob/fdb51f8961792033254af91d753bdf62e228bd32/packages/cli/src/ui/opentui/input-prompt-key.ts) | 可列印的中文／emoji 與控制鍵需要區分。本專案將輸入交給 `prompt_toolkit`，輸出另清除終端控制字元。未移植其鍵盤協定實作。 |
 | [Qwen Code SubAgentTracker](https://github.com/QwenLM/qwen-code/blob/fdb51f8961792033254af91d753bdf62e228bd32/packages/cli/src/acp-integration/session/SubAgentTracker.ts) | 子 Agent 工具開始、結果、串流、用量和審批需帶父子關聯。本專案依原有 task／operation ID 呈現，審批仍寫入原有等待紀錄。 |
 | [Qwen Code SubagentExecutor 契約](https://github.com/QwenLM/qwen-code/blob/fdb51f8961792033254af91d753bdf62e228bd32/packages/core/src/agents/runtime/subagent-executor.ts) | 執行、取消訊號、最終結果和資源釋放屬於不同責任。這裡只作邊界參考；本專案沒有實作其外部執行器或混合模型能力。 |
-| [DeepSeek Harness 父子導航](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-subagent/src/client/SubagentHeaderLineage.tsx) | 保留父子層級及子任務狀態，讓使用者能進入個別任務。本專案提供任務樹、F2 和 `/focus`。 |
+| [DeepSeek Harness 父子導航](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-subagent/src/client/SubagentHeaderLineage.tsx) | 保留父子層級及子任務狀態，讓使用者能進入個別任務。本專案提供任務樹和 `/focus`。 |
 | [DeepSeek Harness 深度計算](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/subagent/subagent/src/depth.ts) | 恢復不能把子任務當根節點重算深度。本專案沿用持久化深度及 workflow 預算，不因切換畫面重置。 |
 | [DeepSeek Harness 子任務生命週期](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/subagent/subagent/src/lifecycle.ts) | 資源已釋放不代表工作成功。本專案分別呈現完成、失敗、取消、逾時及等待。 |
 | [DeepSeek Harness 結構化結果](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/subagent/subagent/src/structured.ts) | 暫時生成內容需經正式結果邊界才可算完成。本專案只把驗證後的根任務公開回答投影到會話歷史；串流草稿不提前成為成功結果。 |
@@ -51,6 +51,8 @@
 官方文件的 API 能力不等於課程金鑰具有權限。`probe` 需要使用自己的合法憑據後，才會產生實測結果。
 
 新版互動終端核心、SSE、Search／Fetch 已另做真實調用，並保留失敗輪次、原因和修復結果；見 [真實協作與新聞檢查](LIVE_COLLABORATION_2026-10-19.md)。程式驅動測試不代替真人輸入法或長時間終端體驗。
+
+終端 Markdown 解析使用 [markdown-it-py 官方文件](https://markdown-it-py.readthedocs.io/en/latest/using.html)描述的 token 介面，轉為 `prompt_toolkit` 樣式片段。HTML 關閉，圖片與連結只顯示文字；程式碼和跳脫字元交由解析器保留。
 
 ## 使用者提供的設計
 

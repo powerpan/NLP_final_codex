@@ -21,15 +21,7 @@ from .domain import AGENTS, TERMINAL, PlatformError, Policy
 from .runtime import Runtime
 from .sessions import SessionService
 from .accounting import summarize_usage
-
-
-def safe_text(value):
-    """Never let remote text drive terminal escape sequences or bidi controls."""
-    text = str(value)
-    text = re.sub(r"\x1b\](?:(?!\x07|\x1b\\).)*(?:\x07|\x1b\\|$)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b.", "", text, flags=re.DOTALL)
-    return "".join(c for c in text if (c in "\n\t" or ord(c) >= 32)
-                   and not 0x7f <= ord(c) <= 0x9f and not 0x202a <= ord(c) <= 0x202e
-                   and not 0x2066 <= ord(c) <= 0x2069 and c not in "\u061c\u200e\u200f" and not 0xd800 <= ord(c) <= 0xdfff)
+from .terminal_markdown import safe_text, render_markdown, clip_fragments
 
 
 def summary_draft(raw):
@@ -81,8 +73,8 @@ def execution_summary_text(summary):
     return "\n".join(lines)
 
 
-HELP = """Enter 送出 · Alt+Enter 換行 · Tab 補全 · F2 切換 Agent 詳情
-PageUp / PageDown 捲動 · Ctrl+C 暫停 · Ctrl+D 離開
+HELP = """Enter 送出 · Alt+Enter 換行 · Tab 補全
+PageUp / PageDown 翻頁 · Ctrl+Home 最前 · Ctrl+End 最新 · Ctrl+C 暫停 · Ctrl+D 離開
 /new [標題]       建立會話         /sessions          會話清單
 /switch ID        切換會話         /agent NAME        選擇下一輪主 Agent
 /tree             父子任務樹       /focus ID|all       查看 Agent 的工作
@@ -90,6 +82,7 @@ PageUp / PageDown 捲動 · Ctrl+C 暫停 · Ctrl+D 離開
 /approve ID       批准指定操作     /deny ID            拒絕指定操作
 /resume           恢復當前會話     /cancel [TASK_ID]   取消任務及其子任務
 /status           預算與狀態       /clear              清除提示 / 返回對話
+/copy             選字複製模式（全螢幕）；再次輸入或 Esc 返回
 /help             指令說明         /exit               保存會話並離開
 只有一個待答問題時，可直接輸入答案。審批必須使用 /approve 或 /deny。
 執行中可回答問題、審批、查看狀態；下一輪請等本輪完成。
@@ -388,41 +381,63 @@ class TerminalController:
             lines.append("")
         return safe_text("\n".join(lines))
 
-    def transcript(self):
+    def transcript_sections(self):
+        """Only assistant prose is Markdown; commands and server data stay literal."""
         if self.panel:
-            return safe_text(self.panel() if callable(self.panel) else self.panel)
+            return [(False, safe_text(self.panel() if callable(self.panel) else self.panel))]
         lines = []
+        def literal(*texts):
+            lines.extend((False, text) for text in texts)
+        def markdown(text):
+            lines.append((True, text))
         if not self.focus:
             for entry in self.sessions.history(self.session["id"]):
                 label = "你" if entry["role"] == "user" else entry["owner"]
-                lines.extend([f"{label} ───────────────────", entry["content"], ""])
+                literal(f"{label} ───────────────────")
+                lines.append((entry["role"] == "assistant", entry["content"]))
+                literal("")
                 if entry["artifact_ids"]:
-                    lines.append("產物：" + ", ".join(entry["artifact_ids"]))
+                    literal("產物：" + ", ".join(entry["artifact_ids"]))
                 if entry.get("execution_summary"):
-                    lines.extend([execution_summary_text(entry["execution_summary"]), ""])
+                    literal(execution_summary_text(entry["execution_summary"]), "")
         for task in self.tasks():
             if self.focus and self.focus != task["id"]:
                 continue
             if self.focus:
-                lines.extend([f"{task['owner']} · {task['kind']} · {lifecycle_text(task['status'])}", task["id"],
-                              f"父任務：{task['parent_id'] or 'root'}", "任務：" + task["goal"], ""])
+                literal(f"{task['owner']} · {task['kind']} · {lifecycle_text(task['status'])}", task["id"],
+                        f"父任務：{task['parent_id'] or 'root'}", "任務：" + task["goal"], "")
                 ops = self.store.all("SELECT tool_name,status,error FROM operations WHERE task_id=? ORDER BY created", (task["id"],))
-                lines.extend(f"  {op['tool_name']} · {op['status']} {op['error'] or ''}" for op in ops)
+                literal(*(f"  {op['tool_name']} · {op['status']} {op['error'] or ''}" for op in ops))
                 if task["result_json"]:
                     result = json.loads(task["result_json"])
-                    lines.extend(["", result.get("summary", ""), "產物：" + ", ".join(result.get("artifact_ids", []))])
+                    literal("")
+                    markdown(result.get("summary", ""))
+                    literal("產物：" + ", ".join(result.get("artifact_ids", [])))
                 if task["parent_id"] is None:
-                    lines.extend(["", execution_summary_text(self.sessions.execution_summary(self.session["id"], task["workflow_id"]))])
+                    literal("", execution_summary_text(self.sessions.execution_summary(self.session["id"], task["workflow_id"])))
             draft = self.drafts.get(task["id"])
             if draft and task["status"] not in TERMINAL and (draft["text"] or draft["state"] == "串流中"):
-                lines.extend([f"{task['owner']} · {task['id'][:16]} · {draft['state']}（草稿）",
-                              draft["text"] or ("正在思考…" if draft["reasoning"] else "等待模型輸出…"), ""])
+                literal(f"{task['owner']} · {task['id'][:16]} · {draft['state']}（草稿）")
+                markdown(draft["text"] or ("正在思考…" if draft["reasoning"] else "等待模型輸出…"))
+                literal("")
             if task["status"] in ("FAILED", "CANCELLED", "TIMED_OUT"):
-                lines.append(f"{task['owner']} · {task['status']} · {task['error'] or ''}")
+                literal(f"{task['owner']} · {task['status']} · {task['error'] or ''}")
         if not lines:
-            lines = ["MULTI AGENT", "", "在一個終端裡規劃、委派、審查和交付。", "",
-                     "主對話在左側，父子任務樹在右側。", "Agent 提問和操作審批會顯示在輸入框上方。", "", "輸入 /help 查看指令。"]
-        return safe_text("\n".join(lines))
+            literal("MULTI AGENT", "", "在一個終端裡規劃、委派、審查和交付。", "",
+                    "主對話在左側，父子任務樹在右側。", "Agent 提問和操作審批會顯示在輸入框上方。", "", "輸入 /help 查看指令。")
+        return lines
+
+    def transcript(self):
+        """Literal source for text-only callers; persisted model content is unchanged."""
+        return safe_text("\n".join(text for _, text in self.transcript_sections()))
+
+    def transcript_fragments(self):
+        fragments = []
+        for index, (markdown, text) in enumerate(self.transcript_sections()):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.extend(render_markdown(text) if markdown else (("", safe_text(text)),))
+        return clip_fragments(fragments)
 
 
 async def run_plain(controller):
@@ -486,7 +501,8 @@ async def run_plain(controller):
             for entry in controller.sessions.history(controller.session["id"]):
                 if entry["id"] not in printed and (entry["role"] == "assistant" or entry.get("execution_summary")):
                     if entry["role"] == "assistant":
-                        print(f"\n[{entry['owner']} 流程結束] {safe_text(entry['content'])}", flush=True)
+                        rendered = "".join(text for _, text in render_markdown(entry["content"]))
+                        print(f"\n[{entry['owner']} 流程結束] {rendered}", flush=True)
                     if entry.get("execution_summary"):
                         print(safe_text(execution_summary_text(entry["execution_summary"])), flush=True)
                     printed.add(entry["id"])
@@ -523,9 +539,9 @@ async def run_plain(controller):
 
 async def run_tui(controller, *, input=None, output=None):
     try:
+        import markdown_it  # Required only for the optional rich terminal.
         from prompt_toolkit import Application
         from prompt_toolkit.completion import WordCompleter
-        from prompt_toolkit.document import Document
         from prompt_toolkit.filters import Condition
         from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
@@ -534,17 +550,30 @@ async def run_tui(controller, *, input=None, output=None):
         from prompt_toolkit.layout.dimension import Dimension
         from prompt_toolkit.styles import Style
         from prompt_toolkit.widgets import Frame, TextArea
+        from .terminal_viewport import ScrollableText, scrollable_pane
     except ImportError as exc:
         raise PlatformError("TERMINAL_DEPENDENCY", "請先執行 python -m pip install -e '.[terminal]'，或使用 shell --plain。") from exc
 
-    transcript = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
-    tree = TextArea(read_only=True, scrollbar=True, wrap_lines=True, width=34)
-    pending = TextArea(read_only=True, scrollbar=True, wrap_lines=True, height=Dimension(min=3, max=10))
+    transcript = ScrollableText()
+    tree = ScrollableText(follow=False)
+    pending = ScrollableText(follow=False)
     commands = [word for line in HELP.splitlines() for word in line.split() if word.startswith("/")]
     composer = TextArea(height=3, prompt=" › ", multiline=True, wrap_lines=True,
                         history=InMemoryHistory(), completer=WordCompleter(sorted(set(commands))))
     kb = KeyBindings()
     sending = False
+    copy_mode = False
+    display = {"header": [], "status": "", "notice": "", "has_pending": False}
+
+    def set_copy_mode(enabled):
+        nonlocal copy_mode
+        copy_mode = enabled
+        app.invalidate()
+
+    def on_change():
+        if not copy_mode:
+            app.invalidate()
+
     @kb.add("enter", filter=Condition(lambda: app.layout.has_focus(composer)))
     async def submit(event):
         nonlocal sending
@@ -553,6 +582,12 @@ async def run_tui(controller, *, input=None, output=None):
         sending = True
         value = composer.text
         try:
+            if value.strip() == "/copy":
+                set_copy_mode(not copy_mode)
+                composer.buffer.append_to_history()
+                composer.buffer.reset()
+                return
+            set_copy_mode(False)
             if await controller.submit(value):
                 composer.buffer.append_to_history()
                 composer.buffer.reset()
@@ -565,25 +600,30 @@ async def run_tui(controller, *, input=None, output=None):
         composer.buffer.insert_text("\n")
     @kb.add("c-c")
     async def pause(event):
+        set_copy_mode(False)
         await controller.pause()
     @kb.add("c-d")
     async def leave(event):
         await controller.close()
         app.exit()
-    @kb.add("f2")
-    def cycle(event):
-        ids = [None] + [t["id"] for t in controller.tasks()]
-        controller.focus = ids[(ids.index(controller.focus) + 1) % len(ids)] if controller.focus in ids else None
-        controller.panel = ""
-        app.invalidate()
+    @kb.add("escape", filter=Condition(lambda: copy_mode))
+    def leave_copy_mode(event):
+        set_copy_mode(False)
     @kb.add("pageup")
     def page_up(event):
-        transcript.buffer.cursor_up(count=10)
+        transcript.page(-1)
     @kb.add("pagedown")
     def page_down(event):
-        transcript.buffer.cursor_down(count=10)
+        transcript.page(1)
+    @kb.add("c-home")
+    def first_message(event):
+        transcript.to_start()
+    @kb.add("c-end")
+    def latest_message(event):
+        transcript.to_end()
     @kb.add("c-l")
     def clear(event):
+        set_copy_mode(False)
         controller.panel = ""
         controller.focus = None
         app.invalidate()
@@ -592,39 +632,54 @@ async def run_tui(controller, *, input=None, output=None):
         mode = "OFFLINE DEMO" if controller.demo else getattr(controller.provider, "model", "DEEPSEEK")
         return [("class:brand", "  ◈ MULTI AGENT  "), ("class:muted", safe_text(f"{mode}  /  {controller.owner}  /  {controller.session['id'][:18]}"))]
     def footer():
-        return [("class:muted", " Enter 送出 · Alt+Enter 換行 · F2 Agent · PgUp/PgDn 捲動 · Ctrl+C 暫停 · /help ")]
+        if copy_mode:
+            return [("class:notice", " 選字模式 · 拖曳選取後 ⌘C 複製 · Esc 或 /copy 返回 · 背景任務繼續 ")]
+        mode = "歷史瀏覽" if not transcript.follow else "跟隨最新"
+        return [("class:muted", f" Enter 送出 · /copy 選字 · /focus Agent · Ctrl+End 最新 · {mode} · /help ")]
+
+    def notice():
+        text = "畫面已暫停更新，可用終端原生選字；Esc 或 /copy 返回。" if copy_mode else display["notice"]
+        return [("class:notice", " " + text)]
     wide = Condition(lambda: app.output.get_size().columns >= 92)
-    body = VSplit([transcript, ConditionalContainer(Frame(tree, title="任務樹", style="class:tree"), wide)])
-    root = HSplit([Window(FormattedTextControl(header), height=1),
-                   Window(FormattedTextControl(lambda: [("class:muted", " " + controller.status_text())]), height=1),
+    body = VSplit([scrollable_pane(transcript),
+                   ConditionalContainer(Frame(scrollable_pane(tree, width=34), title="任務樹", style="class:tree"), wide)])
+    root = HSplit([Window(FormattedTextControl(lambda: display["header"]), height=1),
+                   Window(FormattedTextControl(lambda: [("class:muted", " " + display["status"])]), height=1),
                    body,
-                   ConditionalContainer(Frame(pending, title="等待你的回覆", style="class:pending"), Condition(lambda: bool(controller.pending()))),
-                   Window(FormattedTextControl(lambda: [("class:notice", " " + (controller.notices[-1] if controller.notices else ""))]), height=2, wrap_lines=True),
+                   ConditionalContainer(Frame(scrollable_pane(pending, height=Dimension(min=3, max=10)), title="等待你的回覆", style="class:pending"), Condition(lambda: display["has_pending"])),
+                   Window(FormattedTextControl(notice), height=2, wrap_lines=True),
                    Frame(composer, title="對話 / 指令"), Window(FormattedTextControl(footer), height=1)])
     app = Application(layout=Layout(root, focused_element=composer), key_bindings=kb,
                       style=Style.from_dict({"brand": "bold #75dfca", "muted": "#9099a6", "tree": "#a6bacb",
-                                             "pending": "#f5c878", "notice": "#b4c5d8", "frame.border": "#414b58"}),
-                      full_screen=True, mouse_support=True, input=input, output=output,
+                                             "pending": "#f5c878", "notice": "#b4c5d8", "frame.border": "#414b58",
+                                             "md.bold": "bold", "md.italic": "italic", "md.strike": "strike",
+                                             "md.heading": "bold #75dfca", "md.code": "#e5c07b",
+                                             "md.code-label": "italic #9099a6", "md.link": "underline #80bfff",
+                                             "md.marker": "#a6bacb", "md.quote": "#9099a6"}),
+                      full_screen=True, mouse_support=Condition(lambda: not copy_mode), input=input, output=output,
                       min_redraw_interval=.05)
-    controller.on_change = app.invalidate
-    def update(area, text, follow=True):
-        # Bound rendered history only; the SQLite history and model context are untouched.
-        text = text[-100000:]
-        if area.text != text:
-            old_pos = area.buffer.cursor_position
-            at_end = old_pos == len(area.text)
-            pos = len(text) if follow and at_end else min(old_pos, len(text))
-            area.buffer.set_document(Document(text, pos), bypass_readonly=True)
+    controller.on_change = on_change
     async def refresh():
         previous = None
+        previous_view = None
         while not controller.closed:
-            state = (controller.transcript(), controller.tree_text(), controller.pending_text(), controller.status_text())
-            if state != previous:
-                update(transcript, state[0])
-                update(tree, state[1], follow=False)
-                update(pending, state[2], follow=False)
+            if copy_mode:
+                await asyncio.sleep(.1)
+                continue
+            state = (controller.transcript_fragments(), controller.tree_text(), controller.pending_text(), controller.status_text())
+            view = (controller.session["id"], controller.focus, controller.panel)
+            next_display = {"header": header(), "status": state[3],
+                            "notice": controller.notices[-1] if controller.notices else "",
+                            "has_pending": bool(controller.pending())}
+            if state != previous or view != previous_view or next_display != display:
+                display.update(next_display)
+                transcript.set_fragments(state[0], reset=view != previous_view)
+                # Bound only the display; SQLite history/model context stay intact.
+                tree.set_fragments((("", state[1][-100000:]),))
+                pending.set_fragments((("", state[2][-100000:]),))
                 app.invalidate()
                 previous = state
+                previous_view = view
             await asyncio.sleep(.1)
     watcher = asyncio.create_task(refresh())
     try:

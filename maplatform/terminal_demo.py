@@ -47,7 +47,7 @@ class TerminalDemoProvider:
                     tool("research", "delegate_task", {"target_agent": "researcher", "goal": "demo:research", "required_capabilities": ["research"], "acceptance": [{"kind": "nonempty"}]}),
                     tool("code", "delegate_task", {"target_agent": "coder", "goal": "demo:code", "required_capabilities": [], "acceptance": [{"kind": "nonempty"}]}),
                     tool("peer", "ask_agent", {"target_agent": "reviewer", "question": "請說明唯讀諮詢和工作委派的差別。"}))
-            return result("主 Agent 已收到兩個子任務和一個諮詢回覆。researcher 委派了 reviewer；coder 在同一個介面取得答案和操作審批。所有內容皆為離線腳本，未呼叫 API、執行程式或推送 Git。你可以繼續提問，或按 F2 查看各 Agent。")
+            return result("主 Agent 已收到兩個子任務和一個諮詢回覆。researcher 委派了 reviewer；coder 在同一個介面取得答案和操作審批。所有內容皆為離線腳本，未呼叫 API、執行程式或推送 Git。你可以繼續提問，或用 /tree 和 /focus ID 查看各 Agent。")
         context = json.loads(messages[1]["content"])
         session = context.get("session", {})
         history = session.get("previous_turns", [])

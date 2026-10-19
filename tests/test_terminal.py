@@ -22,6 +22,7 @@ from maplatform.terminal import TerminalController, run_tui, safe_text, summary_
 from maplatform.tools import MemorySandbox, ToolGateway
 
 try:
+    import markdown_it
     from prompt_toolkit import Application
     from prompt_toolkit.input.defaults import create_pipe_input
     from prompt_toolkit.output import DummyOutput

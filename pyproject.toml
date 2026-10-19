@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-terminal = ["prompt_toolkit>=3.0.48,<4"]
+terminal = ["prompt_toolkit>=3.0.48,<4", "markdown-it-py>=3,<5"]
 
 [project.scripts]
 ma-platform = "maplatform.__main__:main"
